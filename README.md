@@ -1,2 +1,3 @@
 # Quadtrix.cpp
-<img width="892" height="219" alt="image" src="https://github.com/user-attachments/assets/7acf5d20-66c9-4966-b19b-4f8c1fa8dd7f" />
+<img width="934" height="239" alt="image" src="https://github.com/user-attachments/assets/7470b7db-1c5a-4695-8a38-fe8292a19986" />
+
