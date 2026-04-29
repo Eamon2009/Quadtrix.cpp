@@ -50,7 +50,7 @@ start = time.time()
 #  CONFIGURATION
 
 
-cleaned_path  = "cleaned.txt"
+cleaned_path  = "data\cleaned.txt"
 train_split   = 0.9
 seed          = 1337
 

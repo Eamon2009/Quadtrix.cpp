@@ -1,1 +1,7 @@
 .venv
+*.pt
+*.bin
+*.exe
+build/
+libtorch/
+CMakePresets.json
