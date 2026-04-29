@@ -54,7 +54,7 @@ seed          = 1337
 
 batch_size    = 16
 block_size    = 32
-max_iters     = 2000
+max_iters     = 3000
 eval_interval = 100
 learning_rate = 1e-3
 device        = torch_directml.device()
