@@ -1,3 +1,7 @@
+// Run with: g++ -std=c++17 -O2 -I. -Iinclude -o Quadtrix torch_main.cpp
+// Then train: ./Quadtrix engine/data/cleaned.txt
+// Chat : ./Quadtrix engine/data/cleaned.txt --chat
+
 #include <torch/torch.h>
 #include <iostream>
 #include <iomanip>
