@@ -3,7 +3,22 @@
 <img width="1171" height="264" alt="image" src="https://github.com/user-attachments/assets/f15ed54b-9cf6-46a7-8f51-6f204cb2dd36" />
 
 
-This project can be technically defined as an isomorphic, multi-backend implementation of a Generative Pre-trained Transformer (GPT) architecture, engineered to demonstrate the parity between high-level deep learning frameworks and low-level computational primitives.It functions as a comprehensive "vertical slice" of modern AI engineering, spanning from raw C++ pointer arithmetic to high-level Python abstractions
+## Quadtrix.cpp a autoregressive language model in two variants:
+
+
+CPU Implementation (C++17): Fully custom from-scratch implementation with zero external dependencies. Features a hand-rolled Tensor class with manual gradient tracking, explicit forward/backward passes through transformer blocks (multi-head self-attention, feedforward MLPs, layer normalization), AdamW optimizer with momentum and weight decay, and cross-entropy loss. All operations—matrix multiplications, softmax, GELU activations, attention scoring—are raw C++ arithmetic with no framework overhead.
+
+
+GPU Implementation (PyTorch + CUDA): Architecturally identical transformer (same layer configs, attention heads, embedding dimensions) but delegates tensor operations to PyTorch's CUDA backend for GPU parallelization. The model structure remains unchanged; only the compute substrate shifts from CPU to GPU tensor cores.
+
+
+Training Pipeline: Both versions follow standard autoregressive training: tokenize input text → forward pass through embedding + N transformer blocks → compute cross-entropy loss on next-token predictions → backpropagation to compute gradients → AdamW weight updates. Repeated over batches until convergence.
+
+
+GPU Extension Limitation: A native CUDA implementation (custom kernels for matrix ops, attention, etc.) requires access to NVIDIA hardware for development and testing, currently unavailable. The PyTorch version serves as a GPU-accelerated alternative without requiring hand-written CUDA 
+
+---
+
 ### Hardware Execution Backends
 
 | Device | Technical Execution Pathway |
@@ -35,191 +50,342 @@ python engine/main.py
 python engine/inference.py
 ```
 
+## Overview
+
+**Quadtrix** is a self-contained C++17 implementation of a GPT-style transformer language model trained at the character level. It implements the full pipeline — tokenisation, forward pass, analytical backpropagation, and autoregressive generation — in a single dependency-free codebase.
+
+The project is a faithful port of the Python/PyTorch training loop written in C++ with hand-derived gradients for every layer: linear projections, multi-head causal self-attention, layer normalisation, feed-forward blocks, softmax, ReLU, dropout, and cross-entropy loss.
+
+**Training run v1.0** used a 31M-character children's story corpus, reaching a validation loss of **1.6371** in 76 minutes on CPU.
+
+---
+
 ## Architecture
 
-Decoder-only transformer with clean fundamentals:
+Quadtrix uses a decoder-only transformer (GPT-2 style) with pre-layer-normalisation residual blocks.
 
 ```
-Input → Token Embedding → Position Embedding
-  ↓
-[Transformer Block] × n_layer
-  ├─ Multi-Head Self-Attention (n_head=4)
-  ├─ Layer Normalization
-  ├─ Feed-Forward Network (4× expansion)
-  └─ Residual Connections
-  ↓
-Layer Norm → Linear Head → Logits
+Input tokens  [B, T]
+      │
+      ▼
+Token Embedding     [vocab_size × n_embd]
+      +
+Position Embedding  [block_size × n_embd]
+      │
+      ▼
+┌─────────────────────────────────┐
+│  Transformer Block  × n_layer   │
+│                                 │
+│  ┌──────────────────────────┐   │
+│  │  LayerNorm (pre-LN)      │   │
+│  └──────────┬───────────────┘   │
+│             ▼                   │
+│  ┌──────────────────────────┐   │
+│  │  Multi-Head Causal Attn  │   │
+│  │  n_head × head_size      │   │
+│  │  + causal mask           │   │
+│  │  + dropout               │   │
+│  └──────────┬───────────────┘   │
+│             ▼ (residual +)      │
+│  ┌──────────────────────────┐   │
+│  │  LayerNorm (pre-LN)      │   │
+│  └──────────┬───────────────┘   │
+│             ▼                   │
+│  ┌──────────────────────────┐   │
+│  │  Feed-Forward MLP        │   │
+│  │  Linear → ReLU → Linear  │   │
+│  │  (4× expansion) +dropout │   │
+│  └──────────┬───────────────┘   │
+│             ▼ (residual +)      │
+└─────────────────────────────────┘
+      │
+      ▼
+LayerNorm  →  Linear  →  Logits [B, T, vocab_size]
+      │
+      ▼
+Cross-Entropy Loss  /  Softmax + Multinomial Sampling
 ```
 
-**Default hyperparameters** (C++ path):
-- Context: `block_size=64`
-- Model: `n_embd=128, n_head=4, n_layer=4`
-- Training: `batch_size=4, lr=3e-4, max_iters=3000`
-- Optimizer: AdamW with gradient clipping
+### Hyperparameters — v1.0
 
-**PyTorch path** uses GPT-2 tokenization:
-- Context: `block_size=32`
-- Model: `n_embd=64, n_head=4, n_layer=4`
-- Training: `batch_size=16, lr=1e-3, max_iters=2000`
+| Parameter        | Value   | Notes                          |
+|------------------|---------|--------------------------------|
+| `batch_size`     | 4       | Sequences per step             |
+| `block_size`     | 64      | Context window (tokens)        |
+| `n_embd`         | 128     | Embedding dimension            |
+| `n_head`         | 4       | Attention heads                |
+| `n_layer`        | 4       | Transformer blocks             |
+| `dropout`        | 0.2     | Applied to attn weights + proj |
+| `learning_rate`  | 3e-4    | AdamW, β₁=0.9, β₂=0.999       |
+| `max_iters`      | 3000    |                                |
+| `eval_interval`  | 200     |                                |
+| **Total params** | **0.83 M** | (826,985)                  |
 
-## Repository Structure
+---
+
+## Training
+
+The model was trained on a 31.4M-character corpus of short children's stories (`data/input.txt`), split 90/10 into train and validation sets.
+
+| Set        | Tokens      |
+|------------|-------------|
+| Train      | 28,311,139  |
+| Validation | 3,145,683   |
+| Vocabulary | 105 characters |
+
+Training used full **analytical backpropagation** — hand-derived gradients through every operator (cross-entropy → lm_head → layernorm → MHA → FFN → embeddings) without any automatic differentiation library.
+
+The gradient computation follows this chain:
 
 ```
-quadtrix.cpp/
-│
-├── main.cpp                          # C++ training/inference entry point
+dLoss/dLogits  →  dW_lmhead  →  d(LayerNorm_f)
+    → for each Block (reverse):
+        d(FFN residual)  →  d(LN2)  →  d(fc2)  →  d(ReLU)  →  d(fc1)
+        d(MHA residual)  →  d(LN1)  →  d(proj)
+            → for each Head:
+                d(wei@V)  →  d(softmax)  →  d(scale)  →  d(Q@Kᵀ)
+                    →  d(Wk), d(Wq), d(Wv)
+    → d(tok_emb), d(pos_emb)
+```
+
+---
+
+## Training Log
+
+Training run: **Quadtrix v1.0** 
+
+```
+------------------------------------------------------------
+  Quadtrix v1.0                        2026 
+  iter      train     val       elapsed   eta
+  ──────────────────────────────────────────────────────
+     0/3000  4.6523    4.6570    15s       —        [saved]
+   200/3000  2.4876    2.4478    427s      5976s    [saved]
+   400/3000  2.2965    2.3334    783s      5091s    [saved]
+   600/3000  2.2971    2.2572    1105s     4418s    [saved]
+   800/3000  2.2424    2.2018    1331s     3660s    [saved]
+  1000/3000  2.1570    2.2009    1569s     3138s    [saved]
+  1200/3000  2.0914    2.0577    1791s     2687s    [saved]
+  1400/3000  1.9575    2.0151    2013s     2301s    [saved]
+  1600/3000  1.9409    1.9532    2317s     2028s    [saved]
+  1800/3000  1.8233    1.8250    2673s     1782s    [saved]
+  2000/3000  1.7386    1.7724    2999s     1500s    [saved]
+  2200/3000  1.6850    1.7256    3353s     1219s    [saved]
+  2400/3000  1.7298    1.7403    3697s     924s
+  2600/3000  1.7204    1.6680    4031s     620s     [saved]
+  2800/3000  1.5717    1.6471    4347s     310s     [saved]
+  3000/3000  1.7055    1.6371    4571s     0s       [saved]
+  ──────────────────────────────────────────────────────
+
+  done
+  |  time      : 4571.1s  (76.2 min)
+  |  best val  : 1.6371
+  |  weights   : best_model.bin
+------------------------------------------------------------
+```
+
+The model crosses 2.0 val loss around iteration 1200 and continues to improve steadily to **1.6371** — a drop of 3.02 nats from random initialisation.
+
+---
+
+## Inference & Sample Outputs
+
+Weights are loaded from `best_model.bin` and generation proceeds autoregressively: at each step the model consumes the last `block_size` tokens, computes logits over the vocabulary, applies softmax, and samples the next token from the resulting distribution.
+
+### Chat Transcript
+
+> The following samples were produced by the trained v1.0 checkpoint.  
+> The model operates at the character level and was trained on children's stories — expect emergent narrative structure, invented words, and short-form prose.
+
+---
+
+**You:** hi how are you
+
+**Quadtrix:**
+```
+said. You big his's reat cably hawere cast wen. Anted the on feer
+the girl the heri beg that's appy and happecing apy his. Whe mommmy
+had alowith of thad very the rand a coove the ses and the
+```
+
+---
+
+**You:** what is life
+
+**Quadtrix:**
+```
+st happe. It happ a liked back abp happy thing flongs way.
+"Lily lood take maked a fiside apie?" Tom and abed Timm.
+A na starhe of her that they was is they," that and Timmy
+flauch seer aing time tri
+```
+
+---
+
+**You:** Timmy is a
+
+**Quadtrix:**
+```
+bog the scated justo prove the bret you. Timmy nevery some
+the gecid. Her neplay to bet starked a way, that litked cliend.
+They shat corsee get.
+Ben it lows mured she happlay mom and had says."
+Tom
+```
+
+---
+
+**You:** Once upon a time
+
+**Quadtrix:**
+```
+, and said askiced and so owas said sri
+The his brickerys and stew hhat and saw and stark a din't
+She stingry and asked day. Timmy watch and played to cones.
+It eve smors and he skiseed auch pived el make
+```
+
+---
+
+### Extended Free Generation
+
+```
+usidpy the nis the girl Mian in the she foll pot stwed note ful to
+snid sids funded araving many to them big strear birng and That the
+momn,'s saw and icked aging for the cor dad and spzy ited thankeft
+the beecia rear who rah gight sad, and and help ceated and blut the
+waye! Shearted started, "Yes. I wout she feare scal the dingred asked
+not dearve had s                    g. It was hat startedry like his
+in the the was give grin Lily.
+
+Tim ould and hoppen rand tce to the - faind her time. As and Ben't
+the sise askep. It every and sticked Lia loshe wentimed toohld the
+cookes and he gagayss in hen greveryby.
+
+One day, here stomed trreave one up in Annamecy it noted Mise with
+that make tret a like.
+
+Tom."
+T'vey, ""As smie, a, "I's wurre and not make day, but tway it?
+Lily. The stach, says eveere they am and then a to happprosh apper,
+and his plh? That you obo. The garded rike, nothis to fring they
+is his ared to shing itsed and old neved the pretoy beard shappy
+hingse they him at happy his stroughts have nex's by.
+```
+
+### Observations
+
+- The model has learned basic English word-level shapes after 3000 iterations despite training at the character level.
+- Names (`Timmy`, `Lily`, `Tom`, `Ben`, `Mia`) appear consistently — likely the most frequent tokens in the story corpus.
+- Dialogue punctuation (`"`, `'`, `,`) is placed plausibly.
+- Sentence-level structure emerges: the model produces recognisable story beats ("One day,", "It was", "and said").
+- At 0.83M parameters and block_size=64, the context window is narrow; longer-range coherence will improve with larger `block_size` and more iterations.
+
+---
+
+## Main Structure
+
+```
+Quadtrix.cpp/
 ├── config/
-│   └── config.h                      # Hyperparameters and system config
-├── include/                          # Transformer implementation
-│   ├── dataloader.h                  # Text corpus handling
-│   ├── model.h                       # GPT model architecture
-│   ├── layers.h                      # Attention, FFN, LayerNorm
-│   ├── backward.h                    # Analytical gradient computation
-│   └── tensor.h                      # N-dimensional array operations
-│
-├── engine/                           # PyTorch ecosystem
-│   ├── main.py                       # Training script (GPT-2 tokenizer)
-│   ├── inference.py                  # Interactive chat interface
-│   ├── export_weights.py             # PyTorch → C binary conversion
-│   ├── engine.c                      # Dependency-free C inference
-│   ├── best_model.pt                 # Trained checkpoint
-│   └── model.bin                     # Exported weights for C engine
-│
-├── iGPU/                             # DirectML Windows support
-│   ├── main.py                       # Training on integrated GPUs
-│   └── inference.py                  # DirectML inference
-│
-├── frontend/                         # Web chat interface (WIP)
-│   ├── src/api/                      # REST client (chat, sessions)
-│   ├── vite.config.ts                # Build configuration
-│   └── index.html                    # Application shell
-│
-├── model/                            # LibTorch experiments
-│   ├── CMakeLists.txt                # C++ build with libtorch
-│   └── export_tokenizer.py           # GPT-2 vocabulary export
-│
-├── scripts/
-│   └── build_torch.ps1               # Windows LibTorch helper
-│
-└── quadtrix_training_plots.ipynb     # Visualization and analysis
+│   └── config.h          # All hyperparameters — edit here to retrain
+├── include/
+│   ├── tensor.h          # CPU float tensor: 2D/3D ops, matmul, softmax, etc.
+│   ├── linear.h          # nn.Linear equivalent (weight + optional bias)
+│   ├── embedding.h       # nn.Embedding (token + position lookup tables)
+│   ├── layernorm.h       # nn.LayerNorm (γ/β, ε=1e-5)
+│   ├── attention.h       # Head (causal mask, scaled dot-product) + MultiHeadAttention
+│   ├── feedforward.h     # FeedForward: Linear → ReLU → Linear → Dropout
+│   ├── block.h           # Transformer Block (pre-LN, dual residual)
+│   ├── gpt.h             # GPTLanguageModel, cross_entropy, generate()
+│   ├── dataloader.h      # Char tokeniser (stoi/itos), train/val split, get_batch()
+│   └── backward.h        # Full analytical backprop + AdamW state
+├── data/
+│   └── input.txt         # Training corpus (plain text)
+├── main.cpp              # Training pipeline
+└── README.md
+
 ```
 
-## Training Flow
+---
 
-The native C++ implementation teaches transformer mechanics through explicit steps:
+## Building
 
-**1. Data preparation**
-```cpp
-// Load corpus, build vocabulary
-Dataloader loader("data/input.txt");
-const int vocab_size = loader.vocab_size();
-```
-
-**2. Model initialization**
-```cpp
-GPT model(vocab_size, BLOCK_SIZE, N_EMBD, N_HEAD, N_LAYER);
-```
-
-**3. Training loop**
-```cpp
-for (int iter = 0; iter < MAX_ITERS; iter++) {
-    // Sample batch
-    auto [x, y] = loader.get_batch(BATCH_SIZE, BLOCK_SIZE, true);
-    
-    // Forward pass (saves activations)
-    auto [logits, loss] = model.forward(x, y);
-    
-    // Backward pass (analytical gradients)
-    model.backward();
-    
-    // Optimizer step (AdamW)
-    optimizer.step();
-    
-    // Checkpoint best model
-    if (val_loss < best_val_loss) {
-        model.save("best_checkpoint.bin");
-    }
-}
-```
-
-**4. Inference**
-```cpp
-model.load("best_checkpoint.bin");
-std::string generated = model.generate("Hello", max_tokens=100);
-```
-
-## Usage Examples
-
-### Native C++ Training
+**Requirements:** GCC ≥ 9 or Clang ≥ 10, C++17, no external dependencies.
 
 ```bash
-# Train with default settings
+# Compile
+g++ -std=c++17 -O2 -I. -o quadtrix main.cpp
+
+# Or use Make
+make
+
+# Train on your own text
 ./quadtrix data/input.txt
 
-# Generate text from checkpoint
+# Generate only (loads best_model.bin)
 ./quadtrix data/input.txt --generate
-
-# Interactive chat mode
-./quadtrix data/input.txt --chat --chat-tokens 120
-
-# Custom paths via environment
-export GPT_DATA_PATH=/path/to/corpus.txt
-export GPT_MODEL_PATH=/path/to/checkpoint.bin
-./quadtrix
 ```
 
-### PyTorch Engine
+---
 
-```bash
-# Train model (saves to engine/best_model.pt)
-python engine/main.py
+## Configuration
 
-# Interactive chat
-python engine/inference.py
+All hyperparameters live in `config/config.h`. Rebuild after any change.
 
-# One-shot generation
-python engine/inference.py --prompt "Explain transformers in one sentence."
+```cpp
+// config/config.h
 
-# Custom checkpoint
-python engine/inference.py --checkpoint engine/best_model.pt --prompt "Hello"
+static const int   BATCH_SIZE     = 4;       // sequences per gradient step
+static const int   BLOCK_SIZE     = 64;      // context window length
+static const int   MAX_ITERS      = 3000;    // total training iterations
+static const int   EVAL_INTERVAL  = 200;     // evaluate every N steps
+static const float LEARNING_RATE  = 3e-4f;   // AdamW learning rate
+static const int   EVAL_ITERS     = 10;      // batches per eval estimate
+static const int   N_EMBD         = 128;     // embedding dimension
+static const int   N_HEAD         = 4;       // number of attention heads
+static const int   N_LAYER        = 4;       // number of transformer blocks
+static const float DROPOUT        = 0.2f;    // dropout probability
 ```
 
-### DirectML (Windows iGPU)
+### Scaling guide
 
-```bash
-# Install DirectML backend
-pip install torch-directml tiktoken
+| Target           | Suggestion                                              |
+|------------------|---------------------------------------------------------|
+| Better coherence | ↑ `block_size` (256–512), ↑ `n_embd` (256+)            |
+| Faster training  | ↑ `batch_size`, compile with `-O3 -march=native`        |
+| Smaller model    | ↓ `n_layer` (2), ↓ `n_embd` (64)                       |
+| More parameters  | ↑ `n_embd` (512), ↑ `n_layer` (6–8)                    |
 
-# Train on integrated GPU
-python iGPU/main.py
-```
+---
 
-### Pure C Inference
+## Design Notes
 
-```bash
-# Export PyTorch weights to binary format
-python engine/export_weights.py engine/best_model.pt engine/model.bin
+### Why C++17, no dependencies?
 
-# Compile inference engine
-gcc -O3 -o gpt_inference engine/engine.c -lm
+The goal is full transparency. Every multiply-accumulate, every softmax row, every gradient derivation is readable in the source. There is no framework between the math and the metal.
 
-# Run inference (token-level generation)
-./gpt_inference engine/model.bin
-```
+### Analytical backprop
 
-**Note**: C engine demonstrates core inference but lacks full GPT-2 BPE tokenizer integration.
+Rather than automatic differentiation, Quadtrix implements explicit backward passes for each operator. The derivations follow the standard formulations:
 
-### LibTorch Integration
+- **Cross-entropy:** `d_logits = softmax(logits) − one_hot(target)` scaled by `1/BT`
+- **Linear:** `dX = dOut @ Wᵀ`, `dW += Xᵀ @ dOut`, `db += Σ dOut`
+- **LayerNorm:** Ba et al. (2016) three-term formula via saved `μ`, `σ⁻¹`, `x̂`
+- **Softmax:** `d_pre[i] = s[i] * (d[i] − Σⱼ s[j] d[j])`
+- **ReLU:** `dX[i] = dOut[i] if pre_relu[i] > 0 else 0`
+- **Attention:** product rule through `Q @ Kᵀ`, causal mask zeros upper-triangle grads
+- **Embeddings:** scatter-add for tokens, batch-sum for positions
 
-```bash
-# Linux/macOS
-cmake -S . -B build -DTORCH_DIR=/path/to/libtorch
-cmake --build build --config Release
+### Causal masking
 
-# Windows
-.\scripts\build_torch.ps1 -LibtorchRoot C:\path\to\libtorch
-```
+The upper-triangular mask is applied before softmax by setting future positions to `-1e30`. During backprop these positions receive zero gradient (the `-inf` entries have zero softmax output, so `s[i] * (...)` = 0).
 
+### Dropout
+
+Both the attention weight matrix and the projection output have independent dropout masks sampled during each forward pass. The same masks are stored and reused in the backward pass (`d = d * mask / (1 - p)`).
+
+---
 ## Training Metrics
 
 The training report visualizes three critical dynamics:
@@ -253,7 +419,7 @@ The following table compares three distinct training runs across different archi
 | Attention Heads | 4 | 4 | 4 |
 | Context Length | 64 | 200 | 200 |
 | **Dataset** | | | |
-| Corpus | `tinystories.txt` | `tinystories.txt` | Children's Stories |
+| Corpus | `tinystories` | `tinystories` | Children's Stories |
 | Vocab Size | 105 (char) | 110 (char) | ~50K (BPE) |
 | Training Tokens | 28.3M | 79.6M | Unknown |
 | Validation Tokens | 3.1M | 8.8M | Unknown |
@@ -325,73 +491,12 @@ Extrapolating from our empirical data:
 
 **Chinchilla-optimal ratio**: For compute-efficient training at this scale, target N ≈ 20 × D (parameters ≈ 20 × training tokens in billions).
 
-![Training Logs - Character Level](screenshots/training_logs.png)
-*Training logs from Run 2 showing rapid convergence on Tesla T4 GPU. Final validation performance of 0.9301 achieved in under 6 minutes.*
-
-### Key Takeaways
-
 1. **Scaling works**: Doubling parameters reduces loss by ~30-40% consistently
 2. **Hardware matters**: GPU acceleration provides 12× speedup with better loss
 3. **Small models saturate quickly**: Beyond 5K iterations, gains diminish without more capacity
 4. **Character-level is competitive**: At small scale, character models perform reasonably despite simpler tokenization
 5. **Generalization is healthy**: Both runs avoid severe overfitting, suggesting good regularization defaults
 
-## Design Principles
-
-**1. Educational transparency**
-- Explicit forward/backward passes without autograd magic
-- Saved activation tensors for gradient computation
-- Hand-written attention math and layer normalization
-
-**2. Full-stack ownership**
-- Train in C++ or PyTorch
-- Export weights to bare-metal C
-- Deploy without framework dependencies
-
-**3. Practical experimentation**
-- Multiple data paths (char-level, GPT-2 tokenizer)
-- Multiple backends (CPU, CUDA, DirectML)
-- Multiple interfaces (CLI, Python, C, web frontend)
-
-## Known Limitations
-
-**Current state**: This is a research sandbox, not production-ready software.
-
-- **Data fragmentation**: C++ path uses character-level tokenization, PyTorch path uses GPT-2 BPE. Vocabularies are incompatible.
-- **Missing files**: Some scripts reference `data/input.txt` or `engine/data/cleaned.txt` which are not included. Provide your own corpus.
-- **Frontend incomplete**: API client exists but React app source is partial. Backend server endpoints not implemented.
-- **Path hardcoding**: Some scripts contain machine-specific Windows paths (e.g., `export_weights.py`).
-- **C tokenizer gap**: Pure C inference engine lacks full BPE tokenization, limiting chat functionality.
-
-## Roadmap
-
-**High-priority improvements**:
-- [ ] Unify tokenization across all paths (settle on GPT-2 BPE)
-- [ ] Add example dataset or script to download/prepare corpus
-- [ ] Make checkpoint paths portable and configurable
-- [ ] Complete frontend React app and backend API server
-- [ ] Document binary checkpoint format specification
-- [ ] Full BPE tokenizer in C for standalone inference
-
-**Nice-to-have additions**:
-- [ ] Multi-platform build instructions (Windows/Linux/macOS)
-- [ ] Performance benchmarks across backends
-- [ ] Model size ablations (bigger transformers)
-- [ ] Distributed training support
-- [ ] INT8 quantization for C inference
-
-## Why This Exists
-
-Modern ML frameworks are incredible productivity tools, but they obscure fundamentals. When `loss.backward()` just works, you don't learn *why* it works.
-
-Quadtrix.cpp is for people who want to understand:
-- How attention weights flow backward through softmax
-- Why position embeddings need gradients
-- How AdamW differs from SGD in practice
-- What "residual connections" actually do for gradient flow
-- How to checkpoint models without Pickle
-
-If you're comfortable with calculus and C++, this codebase will teach you transformers from the ground up.
 
 ## Comparison to Other Projects
 
@@ -401,8 +506,6 @@ If you're comfortable with calculus and C++, this codebase will teach you transf
 | **llama2.c** | Inference only | C | None |
 | **minGPT** | Educational PyTorch | Python | PyTorch |
 | **Quadtrix.cpp** | Training + inference, multi-backend | C++/Python/C | Manual + PyTorch |
-
-**Unique value**: Quadtrix bridges educational C++ training (see the math) with practical PyTorch iteration (experiment fast) and bare-metal C deployment (ship lean).
 
 ## Building From Source
 
@@ -440,3 +543,5 @@ pip install torch tiktoken numpy
 ## License
 
 MIT
+
+*Quadtrix.cpp · val loss 1.6371 · 0.83M params · 76 min on CPU* 
