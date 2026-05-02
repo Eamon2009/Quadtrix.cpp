@@ -1,6 +1,12 @@
-# Quadtrix.cpp
----
-<img width="1171" height="264" alt="image" src="https://github.com/user-attachments/assets/f15ed54b-9cf6-46a7-8f51-6f204cb2dd36" />
+# Quadtrix.cpp  <p align="center">
+  <a href="https://eamon2009.github.io/LLM/">
+    <img src="https://img.shields.io/badge/Quadtrix-Paper-blue?style=for-the-badge">
+  </a>
+</p>
+<img width="1550" height="393" alt="image" src="https://github.com/user-attachments/assets/22b8f8de-362d-40f7-8313-6a14f94cc647" />
+
+<img width="1010" height="727" alt="image" src="https://github.com/user-attachments/assets/b52fdbe7-9fe2-4415-9282-d0b97cb00165" />
+
 
 
 ## Quadtrix.cpp a autoregressive language model in two variants:
@@ -17,6 +23,14 @@ Training Pipeline: Both versions follow standard autoregressive training: tokeni
 
 GPU Extension Limitation: A native CUDA implementation (custom kernels for matrix ops, attention, etc.) requires access to NVIDIA hardware for development and testing, currently unavailable. The PyTorch version serves as a GPU-accelerated alternative without requiring hand-written CUDA 
 
+---
+#  Leaderboard
+| s.no | time | val_bpb | CORE | Description | Date | Contributors |
+|---|-------------|---------|------|-------------|------|--------------|
+| 0 | 39.4 min | 1.3145 | 0.82M | Quadtrix CPU baseline, small data (200K chars), fragmented output | 2026 |  @Eamon2009 |
+| 1 | 61.3 min | 0.7176 | 10.82M |Quadtrix Colab large-scale run, coherent paragraphs, strong convergence | 2026 | @Eamon2009 |
+| 2 | 6.1 min | 0.9250 | 1.99M | Quadtrix T4 optimized run, fast training, stable learning, basic coherence | 2026 | @Eamon2009 |
+| 3 | 76.2 min | 1.6371 | ~0.82M | Quadtrix.cpp Extended CPU training (3000 iters) | 2026 | @Eamon2009 |
 ---
 
 ### Hardware Execution Backends
