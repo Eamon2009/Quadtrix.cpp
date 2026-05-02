@@ -4,44 +4,57 @@ import torch.nn as nn
 from torch.nn import functional as F
 import time
 import sys
+from pathlib import Path
 import tiktoken
 
-#  DISPLAY UTILITIES
+#  LOGGING UTILITIES
 W      = 78
-DOUBLE = " ═" * W
-SINGLE = " ─" * W
+DOUBLE = "=" * W
+SINGLE = "-" * W
 TICK   = "best"
-ARROW  = "→"
+ARROW  = ">"
+
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_PATH = LOG_DIR / f"run_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+
+def log(message=""):
+    line = "" if message == "" else f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {message}"
+    print(line)
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(f"{line}\n")
 
 def header(title, subtitle=""):
-    print(f"\n{DOUBLE}")
-    print(f"  {title}")
+    log()
+    log(DOUBLE)
+    log(f"  {title}")
     if subtitle:
-        print(f"  {subtitle}")
-    print(DOUBLE)
+        log(f"  {subtitle}")
+    log(DOUBLE)
 
 def row(label, value="", unit="", note=""):
     label_col = f"  {label:<28}"
     value_col = f"{str(value):<20}"
     unit_col  = f"{unit:<8}"
     note_col  = f"  {note}" if note else ""
-    print(f"{label_col}{value_col}{unit_col}{note_col}")
+    log(f"{label_col}{value_col}{unit_col}{note_col}")
 
-def rule():   print(f"  {SINGLE}")
-def blank():  print()
-def info(msg):    print(f"  {ARROW}  {msg}")
-def success(msg): print(f"  {TICK}  {msg}")
+def rule():   log(f"  {SINGLE}")
+def blank():  log()
+def info(msg):    log(f"  {ARROW}  {msg}")
+def success(msg): log(f"  ok  {msg}")
 
 
 #  SESSION
 
 
 
-print(f"{'Quadtrix-v1.0':^{W}}")
+log(f"{'Quadtrix-v1.0':^{W}}")
 blank()
 row("Started",  time.strftime('%Y-%m-%d  %H:%M:%S'))
 row("Device",   str(torch_directml.device()))
 row("PyTorch",  torch.__version__)
+row("Log file", str(LOG_PATH))
 
 start = time.time()
 
@@ -229,14 +242,25 @@ model     = GPTLanguageModel().to(device)
 n_params  = sum(p.numel() for p in model.parameters())
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
+header("CONFIG")
+row("Seed", seed)
+row("Batch size", batch_size)
+row("Block size", block_size)
+row("Learning rate", learning_rate)
+row("Layers", n_layer)
+row("Heads", n_head)
+row("Embedding dim", n_embd)
+row("Dropout", dropout)
+row("Parameters", f"{n_params:,}")
+row("Train tokens", f"{len(train_data):,}")
+row("Val tokens", f"{len(val_data):,}")
 
 
 #training 
-header("TRAINING", f"{max_iters:,} steps  ·  eval every {eval_interval}  ·  checkpoint on improvement")
+header("TRAINING", f"{max_iters:,} steps | eval every {eval_interval} | checkpoint on improvement")
 blank()
 
-print(f"  {'Step':<13}{'Progress':>8}  {'Train':>10}  {'Val':>10}  {'Elapsed':>9}  {'ETA':>9}  Status")
-print(f"  {'─'*12}  {'─'*8}  {'─'*9}  {'─'*9}  {'─'*8}  {'─'*8}  {'─'*12}")
+log("  training loop started")
 
 best_val_loss = float('inf')
 train_start   = time.time()
@@ -249,17 +273,20 @@ for iter in range(max_iters):
         pct         = 100 * iter / max_iters
         eta_secs    = (elapsed / (iter + 1)) * (max_iters - iter - 1) if iter > 0 else 0
         is_best     = losses['val'] < best_val_loss
-        status      = f"{TICK} saved" if is_best else "─"
+        status      = f"{TICK} saved" if is_best else "-"
         elapsed_fmt = f"{int(elapsed // 60)}m {int(elapsed % 60):02d}s"
         eta_fmt     = f"{int(eta_secs // 60)}m {int(eta_secs % 60):02d}s"
 
         if is_best:
             best_val_loss = losses['val']
             torch.save(model.state_dict(), 'best_model.pt')
+            log(f"  ckpt path=best_model.pt val_loss={best_val_loss:.4f} step={iter}")
 
-        print(f"  {iter:>5} / {max_iters:<5}  {pct:>7.1f}%  "
-              f"{losses['train']:>10.4f}  {losses['val']:>10.4f}  "
-              f"{elapsed_fmt:>9}  {eta_fmt:>9}  {status}")
+        log(
+            f"  train step={iter}/{max_iters} pct={pct:.1f}% "
+            f"loss_train={losses['train']:.4f} loss_val={losses['val']:.4f} "
+            f"elapsed={elapsed_fmt} eta={eta_fmt} status={status}"
+        )
         sys.stdout.flush()
 
     xb, yb       = get_batch('train')
@@ -282,17 +309,18 @@ rule()
 blank()
 model.load_state_dict(torch.load('best_model.pt', map_location=device))
 model.eval()
-success(f"Restored best_model.pt  ·  val loss {best_val_loss:.4f}")
+success(f"Restored best_model.pt | val loss {best_val_loss:.4f}")
 
 #  INFERENCE
 
 
-header("INFERENCE", "quit / exit / q  →  end session")
+header("INFERENCE", "quit / exit / q -> end session")
 blank()
 
 try:
     while True:
         prompt = input(f"  user  {ARROW} ").strip()
+        log(f"  user  {ARROW} {prompt}")
 
         if prompt.lower() in ("quit", "exit", "q"):
             blank()
@@ -312,7 +340,7 @@ try:
         response   = decode(new_tokens, tokenizer).strip()
 
         blank()
-        print(f"  Model  {ARROW} {response}")
+        log(f"  Model {ARROW} {response}")
         blank()
 
 except KeyboardInterrupt:
@@ -329,4 +357,4 @@ row("Training",     f"{int(total_time // 60)}m {int(total_time % 60):02d}s")
 row("Total",        f"{int(wall_clock // 60)}m {int(wall_clock % 60):02d}s", "", TICK)
 rule()
 blank()
-print(f"{DOUBLE}\n")
+log(f"{DOUBLE}\n")
