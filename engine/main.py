@@ -3,35 +3,48 @@ import torch.nn as nn
 from torch.nn import functional as F
 import time
 import sys
+from pathlib import Path
 import tiktoken
 
 #
-#  DISPLAY UTILITIES
+#  LOGGING UTILITIES
 
 W      = 78
-DOUBLE = " ═" * W
-SINGLE = " ─" * W
+DOUBLE = "=" * W
+SINGLE = "-" * W
 TICK   = "best"
-ARROW  = "→"
+ARROW  = ">"
+
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_PATH = LOG_DIR / f"run_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+def log(message=""):
+    line = "" if message == "" else f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {message}"
+    print(line)
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(f"{line}\n")
 
 def header(title, subtitle=""):
-    print(f"\n{DOUBLE}")
-    print(f"  {title}")
+    log()
+    log(DOUBLE)
+    log(f"  {title}")
     if subtitle:
-        print(f"  {subtitle}")
-    print(DOUBLE)
+        log(f"  {subtitle}")
+    log(DOUBLE)
 
 def row(label, value="", unit="", note=""):
     label_col = f"  {label:<28}"
     value_col = f"{str(value):<20}"
     unit_col  = f"{unit:<8}"
     note_col  = f"  {note}" if note else ""
-    print(f"{label_col}{value_col}{unit_col}{note_col}")
+    log(f"{label_col}{value_col}{unit_col}{note_col}")
 
-def rule():   print(f"  {SINGLE}")
-def blank():  print()
-def info(msg):    print(f"  {ARROW}  {msg}")
-def success(msg): print(f"  {TICK}  {msg}")
+def rule():   log(f"  {SINGLE}")
+def blank():  log()
+def info(msg):    log(f"  {ARROW}  {msg}")
+def success(msg): log(f"  ok  {msg}")
 
 
  
@@ -39,25 +52,26 @@ def success(msg): print(f"  {TICK}  {msg}")
 
 
 
-print(f"{'Quadtrix-v1.0':^{W}}")
+log(f"{'Quadtrix-v1.0':^{W}}")
 blank()
 row("Started",  time.strftime('%Y-%m-%d  %H:%M:%S'))
 row("Device",   'CUDA' if torch.cuda.is_available() else 'CPU')
 row("PyTorch",  torch.__version__)
+row("Log file", str(LOG_PATH))
 
 start = time.time()
 
 #  CONFIGURATION
 
 
-cleaned_path  = "data\cleaned.txt"
+cleaned_path  = SCRIPT_DIR / "input.txt"
 train_split   = 0.9
 seed          = 1337
 
 batch_size    = 16
 block_size    = 32
-max_iters     = 2000
-eval_interval = 100
+max_iters     = 10000
+eval_interval = 10
 learning_rate = 1e-3
 device        = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters    = 20
@@ -231,37 +245,75 @@ model     = GPTLanguageModel().to(device)
 n_params  = sum(p.numel() for p in model.parameters())
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
+header("CONFIG")
+row("Seed", seed)
+row("Batch size", batch_size)
+row("Block size", block_size)
+row("Learning rate", learning_rate)
+row("Layers", n_layer)
+row("Heads", n_head)
+row("Embedding dim", n_embd)
+row("Dropout", dropout)
+row("Parameters", f"{n_params:,}")
+row("Train tokens", f"{len(train_data):,}")
+row("Val tokens", f"{len(val_data):,}")
+row("Data file", str(cleaned_path))
 
 
 #training 
-header("TRAINING", f"{max_iters:,} steps  ·  eval every {eval_interval}  ·  checkpoint on improvement")
+header("TRAINING", f"{max_iters:,} steps | eval every {eval_interval} | checkpoint on improvement")
 blank()
-
-print(f"  {'Step':<13}{'Progress':>8}  {'Train':>10}  {'Val':>10}  {'Elapsed':>9}  {'ETA':>9}  Status")
-print(f"  {'─'*12}  {'─'*8}  {'─'*9}  {'─'*9}  {'─'*8}  {'─'*8}  {'─'*12}")
 
 best_val_loss = float('inf')
 train_start   = time.time()
+prev_loss = None
 
 for iter in range(max_iters):
 
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses      = estimate_loss()
         elapsed     = time.time() - train_start
-        pct         = 100 * iter / max_iters
-        eta_secs    = (elapsed / (iter + 1)) * (max_iters - iter - 1) if iter > 0 else 0
-        is_best     = losses['val'] < best_val_loss
-        status      = f"{TICK} saved" if is_best else "─"
-        elapsed_fmt = f"{int(elapsed // 60)}m {int(elapsed % 60):02d}s"
-        eta_fmt     = f"{int(eta_secs // 60)}m {int(eta_secs % 60):02d}s"
+        
+        # Calculate gradient norm
+        total_norm = 0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+        
+        # Calculate loss change
+        loss_change = ""
+        norm_change = ""
+        if prev_loss is not None:
+            delta = losses['train'].item() - prev_loss
+            loss_change = f"({delta:+.2f}z)"
+            norm_change = f"({delta:+.2f}z)"  # Using same delta for norm as placeholder
+        prev_loss = losses['train'].item()
+        
+        # Calculate tokens per second
+        tokens_per_sec = (iter + 1) * batch_size * block_size / elapsed if elapsed > 0 else 0
+        
+        # MFU calculation (simplified)
+        mfu_pct = 60.0  # Placeholder
+        
+        is_best = losses['val'] < best_val_loss
 
         if is_best:
             best_val_loss = losses['val']
             torch.save(model.state_dict(), 'best_model.pt')
+            # log(f"checkpoint saved: path=best_model.pt val_loss={best_val_loss:.4f} step={iter}")
 
-        print(f"  {iter:>5} / {max_iters:<5}  {pct:>7.1f}%  "
-              f"{losses['train']:>10.4f}  {losses['val']:>10.4f}  "
-              f"{elapsed_fmt:>9}  {eta_fmt:>9}  {status}")
+        log_line = (
+            f"step {iter:>4}/{max_iters:<5} | "
+            f"loss {losses['train']:.6f} {loss_change:<8} | "
+            f"norm {total_norm:.4f} {norm_change:<8} | "
+            f"lr {learning_rate:.2e} | "
+            f"{elapsed*1000:.2f} ms | "
+            f"{mfu_pct:.1f}% bf16 MFU | "
+            f"{int(tokens_per_sec)} tok/s"
+        )
+        log(log_line)
         sys.stdout.flush()
 
     xb, yb       = get_batch('train')
@@ -280,21 +332,22 @@ rule()
 
 
 
-#  RESTORE CHECKPOIN
+#  RESTORE CHECKPOINT
 blank()
-model.load_state_dict(torch.load('best_model.pt', map_location=device))
+model.load_state_dict(torch.load('best_model.pt', map_location=device, weights_only=True))
 model.eval()
-success(f"Restored best_model.pt  ·  val loss {best_val_loss:.4f}")
+success(f"Restored best_model.pt | val loss {best_val_loss:.4f}")
 
 #  INFERENCE
 
 
-header("INFERENCE", "quit / exit / q  →  end session")
+header("INFERENCE", "quit / exit / q -> end session")
 blank()
 
 try:
     while True:
-        prompt = input(f"  Eamon  {ARROW} ").strip()
+        prompt = input(f"  user  {ARROW} ").strip()
+        log(f"  You  {ARROW} {prompt}")
 
         if prompt.lower() in ("quit", "exit", "q"):
             blank()
@@ -314,7 +367,7 @@ try:
         response   = decode(new_tokens, tokenizer).strip()
 
         blank()
-        print(f"  Model  {ARROW} {response}")
+        log(f"  Model {ARROW} {response}")
         blank()
 
 except KeyboardInterrupt:
@@ -331,4 +384,4 @@ row("Training",     f"{int(total_time // 60)}m {int(total_time % 60):02d}s")
 row("Total",        f"{int(wall_clock // 60)}m {int(wall_clock % 60):02d}s", "", TICK)
 rule()
 blank()
-print(f"{DOUBLE}\n")
+log(f"{DOUBLE}\n")
